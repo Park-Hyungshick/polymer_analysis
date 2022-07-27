@@ -143,6 +143,8 @@ class traj_anlysis:
         self.nframes = self.u.trajectory.n_frames
         self.coordinates = self.u.trajectory.timeseries()
         self.cluster_ids = []
+        self.morph_ids = []
+        self.vectors = []
 
         self.boxes = np.empty((0,6), float)
         for itraj in range(self.nframes):
@@ -180,7 +182,7 @@ class traj_anlysis:
 
         return vector
 
-    def print_xyz(self, itraj, filename="trajectory.xyz", mode='w'):
+    def print_xyz(self, itraj, filename="trajectory.xyz", mode='w', anlysis=False):
         cids = self.cluster_ids[itraj]
         size = np.unique(cids, return_counts=True)
         size_dict = dict()
@@ -189,17 +191,114 @@ class traj_anlysis:
 
         with open(filename, mode) as fw:
             fw.write(f'{self.natoms}\n')
-            fw.write(f'Lattice="{ta.boxes[itraj][0]} 0.0 0.0 0.0 {ta.boxes[itraj][1]} 0.0 0.0 0.0 {ta.boxes[itraj][2]}" \n')
+            fw.write(f'Lattice="{self.boxes[itraj][0]} 0.0 0.0 0.0 {self.boxes[itraj][1]} 0.0 0.0 0.0 {self.boxes[itraj][2]}" \n')
 
             for id in range(self.natoms):
                 xyz = self.coordinates[id][itraj]
                 cid = cids[id]
                 mid = self.u.atoms[id].resid
-                fw.write(f'C {xyz[0]} {xyz[1]} {xyz[2]} {cid} {size_dict[cid]} {mid}\n')
+                if ( anlysis ):
+                    fw.write(f'C {xyz[0]} {xyz[1]} {xyz[2]} {cid} {size_dict[cid]} {mid} {self.morph_ids[itraj][id]} \n')
+                else:
+                    fw.write(f'C {xyz[0]} {xyz[1]} {xyz[2]} {cid} {size_dict[cid]} {mid}\n')
 
     def load_cids(self, filename="cluster.pickle"):
         with open(filename,"rb") as fr:
             self.cluster_ids = pickle.load(fr)
+
+    def cluster_idsize_dict(self, itraj):
+        # type(cluster_dict[itraj]) will be dictionary
+        cids = self.cluster_ids[itraj]
+        size = np.unique(cids, return_counts=True)
+        size_dict = dict()
+
+        for (id, num) in zip(size[0],size[1]):
+            size_dict[id] = num
+        return size_dict
+
+    def assign_types(self, itraj):
+        # Code for assign morphology
+        # First, cluster_ids needed
+        # morph_types
+        # Each segments are considered
+        #  A - amorphous / Ci - crystalline segments included to a ith cluster
+        #  
+        # 'A' (A--------A) : Amorphous
+        # 'D' (A-------C1) : Dangling ends
+        # 'L' (C1------C1) : Loop
+        # 'T' (C1------C2) : Tie
+        # cid              : Crystalline monomers (Cluster size >=50)
+        # Only [cid] values are int
+
+        size_dict = self.cluster_idsize_dict(itraj)
+        prev = 0
+        morph = []
+
+        for iresidues in range(self.nmoles):
+
+            morph_chain = ['/']
+            for iparticles in range(len(self.types[iresidues])):
+                itype = 'A'
+                id = prev+iparticles
+                cid = self.cluster_ids[itraj][id]
+                size = size_dict[cid]
+
+                if size >= 50 :itype = cid
+
+                if iparticles != 0 and prev_type != itype :
+                    morph_chain.append("/")
+
+                morph_chain.append(itype)
+                prev_type = itype
+            morph_chain.append('/')
+
+            morph_chain_assign = []
+            slice_idx = [ idx for idx, val in enumerate(morph_chain) if val == '/' ]
+            for key in range(len(slice_idx)-1):
+                segments = morph_chain[slice_idx[key]+1:slice_idx[key+1]]
+
+                # Crystalline domain
+                if type(segments[0]) is int or type(segments[0]) is np.int32:
+                    morph_chain_assign.extend(segments)
+
+                # Amorphous case
+                elif len(segments) == len(self.types[iresidues]): 
+                    morph_chain_assign.extend(segments)
+
+                # Dangling ends
+                elif key == 0 or key == len(slice_idx)-2 :
+                    segments = ['D']*len(segments)
+                    morph_chain_assign.extend(segments)
+
+                # Tie chain
+                elif morph_chain[slice_idx[key]-1] != morph_chain[slice_idx[key+1]+1] :
+                    #print(morph_chain[slice_idx[key]-1], morph_chain[slice_idx[key+1]+1])
+                    segments = ['T']*len(segments)
+                    morph_chain_assign.extend(segments)
+
+                # Loop chain
+                elif morph_chain[slice_idx[key]-1] == morph_chain[slice_idx[key+1]+1] :
+                    first = prev + len(morph_chain_assign) 
+                    last  = first + len(segments) -1
+                    cosine = ( self.vectors[itraj][first][0]*self.vectors[itraj][last][0] +
+                               self.vectors[itraj][first][1]*self.vectors[itraj][last][1] +
+                               self.vectors[itraj][first][2]*self.vectors[itraj][last][2] )
+
+                    if cosine >= 0 :
+                        segments = ['T2']*len(segments)
+                    else :
+                        segments = ['L']*len(segments)
+
+                    print("Check...Loop/Tie chain")
+                    print("Cosine:",cosine)
+                    print("Type:",segments[0])
+                    morph_chain_assign.extend(segments)
+                
+
+            prev += len(self.types[iresidues])
+            morph.extend(morph_chain_assign)
+
+        self.morph_ids.append(morph)
 
 
 if __name__ ==  '__main__':
@@ -211,7 +310,10 @@ if __name__ ==  '__main__':
     if ( str(sys.argv[1]) == '--help' or str(sys.argv[1]) == '-h' ) :
         print("usage : python clustering.py [traj filename] [lammps initfile] [args] \n",
               "-c : use previously obtained cluster_ids \n",
-              "-p : print ovito read-able trajectory file \n")
+              "-p : print ovito read-able trajectory file \n",
+              "-a : crystal domain analysis \n",
+              "-v : change ta class variables \n",
+              "-uv : change ta.u class variables \n")
         sys.exit()
 
     if len(sys.argv) < 3 :
@@ -221,6 +323,9 @@ if __name__ ==  '__main__':
     flags = [ flag for flag in sys.argv if "-" in flag ]
     trajfile = str(sys.argv[1])
     initfile = str(sys.argv[2])
+    #if (initfile.split(".")[-1] == "dat") :
+    #    print("init file format change from .dat to .data")
+    #    initfile += "a"
     ta = traj_anlysis(trajfile, initfile)
 
     # Check print files
@@ -234,7 +339,26 @@ if __name__ ==  '__main__':
     if ( "-c" in sys.argv ):
         cluster_filename = str(sys.argv[sys.argv.index("-c") +1])
         ta.load_cids(cluster_filename)
-    
+
+        # Assign vectors
+        if ( "-a" in sys.argv ):
+            for i in range(ta.nframes):
+                print(f"{i}th trajectory vector calculating...")
+                vector = ta.vector_assign(i) 
+                vector = np.array(vector, dtype=np.float32)
+                ta.vectors.append(vector)
+
+    # variable function
+    for idx, value in enumerate(sys.argv):
+        if ( "-v" == value ):
+            variable_name = str(sys.argv[idx +1])   
+            variable_value = str(sys.argv[idx +2])   
+            setattr(ta,variable_name,variable_value)
+        if ( "-uv" == value ):
+            variable_name = str(sys.argv[idx +1])   
+            variable_value = str(sys.argv[idx +2])   
+            setattr(ta.u,variable_name,variable_value)
+ 
     if ( "-c" not in sys.argv ):
         with open("fraction.dat", "w") as fw:
             fw.write("# time frac num_clusters\n")
@@ -243,11 +367,12 @@ if __name__ ==  '__main__':
             print(i,"th trajectory...")
             comb = np.zeros([ta.natoms,ta.natoms])
             comb = nearest_check(ta.coordinates, ta.boxes, i, comb)
-            vector = ta.vector_assign(i) # Last trajectory
+            vector = ta.vector_assign(i) 
             vector = np.array(vector, dtype=np.float32)
             out = np.zeros([int(len(vector)*(len(vector)-1)/2)], dtype=np.float32)
             print("Initialize + Assign vectors:",datetime.datetime.now())
             dist = omatrix(vector, comb, out)
+            ta.vectors.append(vector)
             del comb
             del out
             del vector
@@ -281,8 +406,18 @@ if __name__ ==  '__main__':
         with open("cluster.pickle","wb") as fw:
             pickle.dump(ta.cluster_ids,fw)
    
+    # Crystal morphlogy anlysis
+    if ( "-a" in sys.argv ):
+        for i in range(ta.nframes):
+            ta.assign_types(i)
+
     if ( "-p" in sys.argv ):
         print_filename = str(sys.argv[sys.argv.index("-p")+1])
         for i in range(ta.nframes):
-            ta.print_xyz(itraj=i, filename=print_filename, mode='a')
+            if ("-a" in sys.argv):
+                ta.print_xyz(itraj=i, filename=print_filename, 
+                             mode='a',anlysis=True)
+            else :
+                ta.print_xyz(itraj=i, filename=print_filename, mode='a')
+
 
