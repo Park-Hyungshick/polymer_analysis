@@ -3,7 +3,6 @@ subroutine read_cids(filename)
 
    character(80)   :: filename
    integer(kind=int32)  :: ntraj, nparticles, cids
-   !integer(kind=int32)  :: ntraj, nparticles, cids
    integer(kind=int32), allocatable, dimension(:,:) :: clusters
 
    integer :: itraj, jpart
