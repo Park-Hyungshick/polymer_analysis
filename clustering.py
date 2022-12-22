@@ -399,7 +399,7 @@ if __name__ ==  '__main__':
             for nmon, nclus in zip(keep[0],keep[1]):
                 if(nmon >= 50):
                     sum += nmon*nclus
-                    ncluster += 1
+                    ncluster += nclus 
             with open("fraction.dat", "a") as fa:
                 fa.write(f"{ta.u.trajectory[i].time} {sum/ta.natoms} {ncluster}\n")
         
